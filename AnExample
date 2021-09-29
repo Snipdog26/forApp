@@ -1,0 +1,857 @@
+-- You ( the reader ) are only allowed to view this code. You may not use it in any way without my ( DevVexus @vroomtex#8833 ) giving consent,
+
+
+
+
+
+
+
+
+
+
+
+
+local CombatClass = {}
+CombatClass.__index = CombatClass
+
+local WeaponClasses = game.ServerStorage.WeaponClasses
+local MagicClasses = game.ServerStorage.MagicClasses
+
+local RotatedRegion3 = require(script.RotatedRegion3)
+local HitboxService = require(script.HitboxService)
+local CharacterPhysics = require(script.CharacterPhysics)
+local DamageService = require(script.DamageService)
+local DamageCalculator = require(script.DamageCalculator)
+
+local DebrisService = game:GetService("Debris")
+
+
+local CameraDeltaEvent = game.ReplicatedStorage.Events.CameraDelta
+local ParryEvent = game.ReplicatedStorage.Events.Parry -- make
+
+
+
+function CombatClass.New(Playerx)
+	print("CombatClass.New for Player:" .. Playerx.Name .. " has been created")
+	return setmetatable({Player = Playerx,
+		Health = 1000,
+		Stamina = 100,
+		Armour = 100,
+		CurrentMeansOfAttack = "Melee",
+		EquippedWeapons = {[1] = {Type = "Longsword",InHand = false,Name = "SwordSet",}, [2] = { Type = "ShortSwordShield", InHand = false, Name = "IDONTKNOW YET"} },
+		CurrentWeapon = nil, -- number index from EquippedWeapons table. Nil if nothing no indexs are in Equipped Weapons.
+		MagicEnergy = 100,
+		canAttack = true,
+		canBeAttacked = true,
+		canUseMagic = true,
+		canMove = true,
+		canBlock = true,
+		Blocking = false,
+		LastAttack = 0,
+		LastBlock = 0,
+		NumberOfSwings = 1,
+		AttackBufferTime = nil,
+		AnimationSwingFinishied = true,
+		ConnectedEvents = {
+			["TargetHit"] = {},},
+		CurrentMagic = nil,
+		AllMagics = {"NexusMagic"},
+		WeaponAnimations = {},
+		CanQuip = true,
+		Target = nil,
+		LastTarget = nil,
+		LastLastTarget = nil,
+		LastDelta = 0, -- closer to one means that its x amount differnt than last one.
+		LastAttackName = "", -- So we dont repeat the same attack
+		LastLastAttackName = "", -- So we allow a bit more variation
+		LockedOnEnemies = {},
+	},CombatClass)
+end
+
+-- The above stats will be changed to functions later on
+
+
+
+
+function CombatClass:IsInRegion()
+
+end
+-- Cross-module communicators
+
+function CombatClass:GetTarget()
+	if self.Target == nil then
+		return false
+	else
+		return self.Target
+	end
+end
+
+function CombatClass:GetCurrentWeapon()
+	if self.CurrentWeapon ~= nil then
+		return self.CurrentWeapon
+	end
+end
+
+function CombatClass:GetCurrentMagic()
+	if self.Player.UserId ~= 75914115 then
+		warn("magic is not implemented. Caller: ".. self.Player.Name)
+		self.Player:Kick("only vexus can have magic")
+		return nil
+	elseif self.Player.UserId == 75914115 then
+		warn('yes you can have magic sir')
+		if self.CurrentMagic ~= nil then
+			return self.CurrentMagic
+		else
+			return nil
+		end
+	end
+end
+
+function CombatClass:DeltaUpdated(NewDelta)
+	print(NewDelta)
+	self.LastDelta = NewDelta
+end
+-- Utility Functions
+function CombatClass:setCanAttack(NewValue)
+	self.canAttack = NewValue
+	return
+end
+function CombatClass:setCanBeAttacked(NewValue)
+	self.canBeAttacked = NewValue
+	return
+end
+function CombatClass:setCanUseMagic(NewValue)
+	self.canUseMagic = NewValue
+	return
+end
+function CombatClass:setCanMove(NewValue)
+	self.canMove = NewValue
+	return
+end
+-- Utility Set Functions
+function CombatClass:canAttack()
+	if self.canAttack ~= nil then
+		return self.canAttack
+	end
+end
+function CombatClass:canBeAttacked()
+	if self.canBeAttacked ~= nil then
+		return self.canBeAttacked
+	end
+end
+function CombatClass:canUseMagic()
+	if self.canUseMagic ~= nil then
+		return self.canUseMagic
+	end
+end
+function CombatClass:canMove()
+	if self.canMove ~= nil then
+		return self.canMove
+	end
+end
+-- Utility Read Functions
+function CombatClass:AddWeaponToTable()
+end
+function CombatClass:RemoveWeaponFromTable()
+end
+function CombatClass:WeldWeapon()
+end
+
+function CombatClass:GetWeaponData(Index)
+	assert(type(Index) == "number", "Index is not a real number given:" .. tostring(Index))
+	if Index ~= nil and self.EquippedWeapons[Index]~=nil then
+		local Class = require(WeaponClasses[(self.EquippedWeapons[Index].Type)])
+		return Class
+	end
+end
+function CombatClass:GetPrimaryWeaponData()
+	if self.EquippedWeapons[(self:GetCurrentWeapon())]~=nil then
+		local Class = require(WeaponClasses[self.EquippedWeapons[(self:GetCurrentWeapon())].Type])
+		return Class
+	end
+end
+function CombatClass:GetWeapon(Index)
+	if Index ~= nil and self.EquippedWeapons[Index] ~= nil then
+		return self.EquippedWeapons[Index]
+	end
+end
+function CombatClass:GetPrimaryWeapon()
+	return self:GetCurrentWeapon()
+end
+-- Weapon Setup Functions
+
+
+function CombatClass:QuipWeapon(Index)-- dont touch, it works lol
+	if self.CanQuip ~= false then
+		self.CanQuip = false
+		if self.EquippedWeapons[Index]~= nil then
+			if self.EquippedWeapons[Index].InHand == true then
+				local Track = 	self:ReturnAnimationTrack("DeEquip")
+				self:RemoveTrailFromPrimaryWeapon()
+				local moduledata = self:GetWeaponData(Index)
+				Track:Play()
+				Track.Stopped:Wait()	
+				moduledata.QuipFunctions["DeEquip"](self.Player.Character)
+
+				self:RemoveWeaponClass(self.EquippedWeapons[Index].Type)
+				self.CurrentWeapon = nil
+				self.EquippedWeapons[Index].InHand = false
+				for i,v in pairs(self.WeaponAnimations) do
+					v:Stop()
+				end
+
+				self.CanQuip = true
+			elseif self.EquippedWeapons[Index].InHand == false then
+				if self.CurrentWeapon ~= Index and self.CurrentWeapon ~= nil then
+					self:RemoveTrailFromPrimaryWeapon()
+					local Track = 	self:ReturnAnimationTrack("DeEquip")
+					local moduledata = self:GetPrimaryWeaponData()			
+					Track:Play()
+					Track.Stopped:Wait()
+					moduledata.QuipFunctions["DeEquip"](self.Player.Character)
+
+					self.EquippedWeapons[self.CurrentWeapon].InHand = false
+					self:RemoveWeaponClass(self.EquippedWeapons[self.CurrentWeapon].Type)
+					self.CurrentWeapon = nil
+					for i,v in pairs(self.WeaponAnimations) do
+						v:Stop()
+					end
+
+					self.CanQuip = true
+				else
+
+					if self.CurrentWeapon == nil then
+						self.CurrentWeapon = Index
+						local moduledata = self:GetPrimaryWeaponData()
+						moduledata.QuipFunctions["Equip"](self.Player.Character)
+						self.EquippedWeapons[Index].InHand = true
+						self:SetupWeaponClass(self.EquippedWeapons[Index].Type)
+						self:LoadTrailOnPrimaryWeapon()
+						for i,v in pairs(self.WeaponAnimations) do
+							v:Stop()
+						end
+						warn("pla")
+						local Track = self:ReturnAnimationTrack("Equip")
+						warn("waited")
+						Track:Play()
+						Track.Stopped:Wait()
+						self:WeaponAnimate("Idle")
+						self.CanQuip = true
+					end
+
+				end
+
+
+				-- IF FALLING / IF SWIMMINg/ Etc , load those instead of idle.
+
+			end
+		end
+	end
+end
+
+
+--[[
+		ConnectedEvents = {
+			EventName = { FunctionName = f, FunctionName = f},
+			EventName = { FunctionName = f, FunctionName = f},
+			EventName = { FunctionName = f, FunctionName = f},
+			EventName = { FunctionName = f, FunctionName = f},
+		}
+
+
+
+AddFunctionToEventPool/RemvoeFunctionFromEventPool are only used by the CombatClass:SetupWeaponClass and CombatClass:RemoveWeaponClass
+]]
+
+function CombatClass:SetupWeaponClass(WeaponToSetup)
+	print("Setting up WeaponClass for: " .. self.Player.Name .. " . Weapon: " .. WeaponToSetup)
+	if WeaponToSetup and (self.EquippedWeapons[self.CurrentWeapon].Type == WeaponToSetup)  then
+		if WeaponToSetup == "Longsword" then
+			self:LS_Create("Add")
+			print("Created")
+		end
+	end
+end
+function CombatClass:RemoveWeaponClass(WeaponToRemove)
+	print("Removing WeaponClass for: " .. self.Player.Name .. " . Weapon: " .. WeaponToRemove)
+	if WeaponToRemove then
+		if WeaponToRemove == "Longsword" then
+			self:LS_Create("Remove")
+			print("Removed")
+		end
+	end
+end
+-- Longsword 
+function CombatClass:LS_Create(Type)
+	if Type == "Add" then
+		self.Stacks = 0-- max stacks = 10
+		function AddStack(self)
+			if self.Stacks >=10 then
+
+			elseif self.Stacks < 10 then
+				self.Stacks = self.Stacks + 1
+			end
+		end
+
+		function RemoveStack(self)
+			if self.Stacks <= 0 then
+			elseif self.Stacks - 1 >-1 then
+				self.Stacks -= 1
+			end
+		end
+
+		function Skill_WithHaste(self,SkillUsed)
+
+			if SkillUsed == "E" then
+				local DashVelocity = Instance.new("BodyVelocity", self.Player.Character.HumanoidRootPart)
+				DashVelocity.MaxForce = Vector3.new(math.huge,math.huge,math.huge)
+				DashVelocity.P = 2250
+				DashVelocity.Velocity = self.Player.Character.HumanoidRootPart.CFrame.LookVector * 250 + Vector3.new(0,0,0)
+				DebrisService:AddItem(DashVelocity, .15)-- will also be removed if hits target, later on
+				self:WeaponAnimate(3)
+			end
+		end
+
+		function Skill_TornadoSwing(self, SkillUsed)
+			if SkillUsed == "Q" then
+
+			end
+		end
+
+
+		self:AddFunctionToEventPool("AddStack", AddStack, "TargetHit")
+		self:AddFunctionToEventPool("RemoveStack", RemoveStack, "RemoveStack")
+		self:AddFunctionToEventPool("Skill_WithHaste", Skill_WithHaste, "SkillUsed")
+		self:AddFunctionToEventPool("Skill_TornadoSwing", Skill_TornadoSwing, "SkillUsed")
+	elseif Type == "Remove" then
+
+		self:RemoveFunctionFromEventPool("AddStack", "TargetHit")
+		self:RemoveFunctionFromEventPool("RemoveStack", "RemoveStack")
+		self:RemoveFunctionFromEventPool("Skill_WithHaste", "SkillUsed")
+		self:RemoveFunctionFromEventPool("Skill_TornadoSwing", "SkillUsed")
+	end
+end
+function CombatClass:Glaive_Create(Type)
+
+end
+-- Eventpool
+function CombatClass:AddFunctionToEventPool(FunctionName, f, EventName)
+	if FunctionName ~= nil and f ~= nil and EventName ~= nil then
+		if self.ConnectedEvents[EventName] ~= nil then
+
+		else
+			self.ConnectedEvents[EventName] = {}
+		end
+		if self.ConnectedEvents[EventName][FunctionName] ~= nil then
+			-- already exists
+			warn("CombatClass:AddFunctionToEventPool, Function: " .. FunctionName .. " Already exists for event " .. EventName)
+		else
+			self.ConnectedEvents[EventName][FunctionName] = f
+		end
+	else
+
+		local ErrorORS = {} -- might remove and add in  the assert() function instead.
+		if FunctionName == nil then
+			table.insert(ErrorORS, #ErrorORS + 1, " FunctionName ")
+		end
+		if f == nil then
+			table.insert(ErrorORS, #ErrorORS + 1, " Function ")
+		end
+		if EventName == nil then
+			table.insert(ErrorORS, #ErrorORS + 1, " EventName ")
+		end
+		local FinalString = ""
+		for i,v in ipairs(ErrorORS)do
+			FinalString = (FinalString .. v)
+		end
+		warn("CombatClass:AddFunctionToEventPool ERROR Missing:" .. FinalString)
+	end
+end
+function CombatClass:RegisterEvent(EventName,Para)
+	print("EventRegistered: " .. EventName)
+	if EventName ~= nil then
+		if self.ConnectedEvents[EventName]~= nil then
+			for index,FunctionName in pairs(self.ConnectedEvents[EventName]) do
+				FunctionName(self,Para)
+				print("Called Function: " .. index)
+			end
+		end
+	end
+end
+function CombatClass:RemoveFunctionFromEventPool(FunctionName, EventName)
+	if FunctionName ~= nil and EventName ~= nil then
+		self.ConnectedEvents[EventName][FunctionName] = nil
+	else
+		local ErrorORS = {}
+		if FunctionName == nil then
+			table.insert(ErrorORS, #ErrorORS + 1, " FunctionName ")
+		end
+		if EventName == nil then
+			table.insert(ErrorORS, #ErrorORS + 1, " EventName ")
+		end
+		local FinalString = ""
+		for i,v in ipairs(ErrorORS)do
+			FinalString = (FinalString .. v)
+		end
+		warn("CombatClass:AddFunctionToEventPool ERROR Missing:" .. FinalString)
+	end
+end
+-- Combat Functions
+function CombatClass:GetCurrentWeaponInstance()
+	if self.Player.Character[(self.EquippedWeapons[self:GetPrimaryWeapon()].Name)]then
+		return self.Player.Character[(self.EquippedWeapons[self:GetPrimaryWeapon()].Name)]
+	end
+end
+function CombatClass:FindObjectInWeapon(ObjectName)-- Too find things like "Handle" in "SwordSet"
+	if self.EquippedWeapons[self:GetPrimaryWeapon()].InHand == true then
+		local ObjectSuperParent: instance = self.Player.Character[(self.EquippedWeapons[self:GetPrimaryWeapon()].Name)]
+		for index, value in pairs(ObjectSuperParent:GetDescendants()) do
+			if value.Name == ObjectName then
+				return value
+			end
+		end
+	end
+end
+function CombatClass:LoadTrailOnPrimaryWeapon()
+	if self:GetPrimaryWeaponData().TrailSettings.HasTrail == true then
+		if game.ReplicatedStorage.Assets.Effects.Combat.Trails[self:GetPrimaryWeaponData().TrailSettings.TrailName] then
+			if game.ReplicatedStorage.Assets.Effects.Combat.Trails[self:GetPrimaryWeaponData().TrailSettings.TrailName].WeaponTrail then
+				local WeaponTrail = game.ReplicatedStorage.Assets.Effects.Combat.Trails[self:GetPrimaryWeaponData().TrailSettings.TrailName].WeaponTrail:Clone()
+				WeaponTrail.Parent = self.Player.Character
+				local Weapon = self:GetCurrentWeaponInstance()
+				WeaponTrail.Attachment0 = self:FindObjectInWeapon("Bottom")
+				WeaponTrail.Attachment1 = self:FindObjectInWeapon("Top")
+			end
+		end
+	end
+end
+function CombatClass:RemoveTrailFromPrimaryWeapon()
+	if self.Player.Character.WeaponTrail then
+		self.Player.Character.WeaponTrail.Parent = nil
+	end
+end
+function CombatClass:ReturnAnimationTrack(AnimationName)
+	print("Called")
+	if AnimationName then
+		print(1)
+		local Data = self:GetWeaponData(self.CurrentWeapon)
+		print(1)
+		if AnimationName == 0 then
+			AnimationName = 1
+		end
+		print(1)
+		print(Data)
+		print(Data.Animations)
+		print(Data.Animations[AnimationName])
+		local AnimationV = Data.Animations[AnimationName]
+		local Animator = self.Player.Character.Humanoid:FindFirstChild("Animator")
+		print(1)
+		if Animator == nil then
+			warn("No Animator Exists for player:" .. self.Player.Name .. ". Creating one now.")
+			Animator = Instance.new("Animator", self.Player.Character.Humanoid)
+			Animator.Name = "Animator"
+		else
+
+		end
+		print(1)
+		print(AnimationV)
+		local Animation = Instance.new("Animation")
+		if AnimationV~= nil then
+			print(1)
+			Animation.AnimationId = AnimationV
+
+			local AnimationTrack = Animator:LoadAnimation(Animation)
+			-- Save memory
+			Data = nil
+			Animation = nil
+			Animator = nil
+			print(1)
+			return AnimationTrack
+		end
+
+		-- end of function
+	end
+end
+function CombatClass:WeaponAnimate(AnimationName)
+	if AnimationName then
+		local Weapon = self.EquippedWeapons[(self:GetCurrentWeapon())]
+		local Data = self:GetPrimaryWeaponData()
+		if AnimationName == 0 then
+			AnimationName = 1
+		end
+		local AnimationV = Data.Animations[AnimationName]
+		local Animator = self.Player.Character.Humanoid:FindFirstChild("Animator")
+		if Animator == nil then
+			warn("No Animator Exists for player:" .. self.Player.Name .. ". Creating one now.")
+			Animator = Instance.new("Animator", self.Player.Character.Humanoid)
+			Animator.Name = "Animator"
+		else
+
+		end
+		local Animation = Instance.new("Animation")
+		if AnimationV~= nil then
+			Animation.AnimationId = AnimationV
+
+			local AnimationTrack = Animator:LoadAnimation(Animation)
+
+			AnimationTrack:Play()
+
+			if type(AnimationName) == "number" then -- Attack
+				if Data.TrailSettings.HasTrail == true then
+					self.Player.Character.WeaponTrail.Enabled = true
+				end
+				self.CanQuip = false
+				self.AnimationSwingFinishied = false
+				print("s")
+				AnimationTrack:GetMarkerReachedSignal("CreateHitBox"):Connect(function(v)
+					print("eococo")
+					local Data = self:GetPrimaryWeaponData()
+					local HitboxFunction = Data.Hitboxes[self.NumberOfSwings]
+					if HitboxFunction then
+						print("re90iiuhedfv")
+						local Size, Position = HitboxFunction(self.Player.Character)
+						local hitboxPart = script.Hitbox:Clone()
+						print(tostring(Size) .. tostring(Position))
+						hitboxPart.Size = Size
+						hitboxPart.CFrame = Position
+						hitboxPart.Transparency = 1
+						hitboxPart.Parent = workspace.Debris
+						DebrisService:AddItem(hitboxPart, 0.5)
+						local region = RotatedRegion3.FromPart(hitboxPart)
+						local entities = HitboxService:GetEntitiesInRegion(region)
+						print(":pa")
+						print(entities)
+						for i, targetCharacter in pairs(entities) do
+							print(targetCharacter.Name)
+							local who = game.Players:GetPlayerFromCharacter(targetCharacter)
+							if who.UserId == 75914115 and self.Player.UserId ~= who.UserId then
+								self.Player:Kick("no")
+							else
+								
+							
+							if targetCharacter ~= self.Player.Character and targetCharacter.Humanoid.Health ~= 0 then
+								print("checked")
+								local damage = DamageCalculator:Calculate(Data.BaseDamages[self.NumberOfSwings], targetCharacter)
+								print(damage)
+								DamageService:InflictDamage(self.Player.Character.Humanoid, targetCharacter.Humanoid, {
+									Damage = damage
+								})
+
+								if Data.Knockbacks[self.NumberOfSwings] > 0.1 then
+									CharacterPhysics:Stun(targetCharacter)
+									-- gotta animate the target character too
+								end
+
+
+								if self.NumberOfSwings >= Data.Animations.TotalAttacks then
+									CharacterPhysics:Knockback(targetCharacter, {
+										Position = self.Player.Character.HumanoidRootPart.CFrame
+									})
+								end
+
+								end
+								end
+						end
+
+					end
+				end)
+				AnimationTrack.Stopped:Wait()
+				self:WeaponAnimate("Idle")
+				self.CanQuip = true
+				self.AnimationSwingFinishied = true
+				if Data.TrailSettings.HasTrail == true then
+					self.Player.Character.WeaponTrail.Enabled = false
+				end
+			elseif type(AnimationName) == "string"then -- Action
+
+			end
+			table.insert(self.WeaponAnimations, #self.WeaponAnimations + 1 , AnimationTrack)
+			-- Save memory
+			Weapon = nil
+			Data = nil
+			Animation = nil
+			Animator = nil
+			AnimationTrack = nil
+		end
+		-- end of function
+	end
+end
+function CombatClass:GetOSTime()
+	local OSTime = tonumber(os.clock())
+	return OSTime
+end
+
+function CombatClass:GetTarget() -- cycles through targets nearby
+	-- Create a region around player that is their make radius for detecting targets.
+	-- Get entities in region.
+	-- Return the closest entity 
+	-- If closest entity is CurrentTarget, then select second closest.
+	-- If current target is second closest, then select closest
+	-- return the instance
+end
+-- also have a silent target picker that selects a flanking target.
+-- Notfiy player that they are being attacked from x side. If player presses a certain button on their keyboard. (ex. q for left , e for right) then 
+-- Then the server is sent a remote event called "parry"
+-- For a split second, the parried target is vunerable to be attacked.
+-- If the player click another button (idk) then they are attacked and done crit damage.
+-- The new target is the target who was just attacked.
+-- If the player just parries and doesnt attack. Then the target stays the same.
+-- if a player presses a certain button then they will do an epic parry to kill them and then go back to the target.
+function  CombatClass:CheckForSpecialAttacks() -- return boolean if special attack exists + which special attack ( its name )
+end
+
+
+function CombatClass:EnemyLockedOn(EnemyName) -- happens when an enemy switched their target to the player
+	assert(type(EnemyName) == "string", "EnemyName is not a valid string got: " .. type(EnemyName))
+	if not self.LockedOnEnemies[EnemyName] then
+		local Data = {
+			["Name"] = EnemyName,
+			AttackCaller = function()
+			--	shared.CombatModules[EnemyName] -- make it fire a signal to pickup when attacking
+			end
+		}
+		table.insert(self.LockedOnEnemies, #self.LockedOnEnemies + 1, {["Name"] = EnemyName, } )
+	end
+end
+function CombatClass:EnemyDeLocked(EnemyName) -- happens when an enemy locks on to someone else. Fires every time someone locks on to anything
+	assert(type(EnemyName) == "string", "EnemyName is not a valid string got: " .. type(EnemyName))
+	if self.LockedOnEnemies[EnemyName]then
+		self.LockedOnEnemies[EnemyName] = nil
+	end
+end
+function CombatClass:EnemyAttacking() -- happens when a locked on enemy attacks
+
+end
+function CombatClass:Parry()
+
+end
+function CombatClass:ParryAttack()
+
+end
+function CombatClass:MakeAnimation(animationlink)
+	if animationlink then
+		assert(type(animationlink) == "string", "Animationlink is not a valid string, got: "  .. type(animationlink))
+		if self.Player.Character then
+
+			if self.Player.Character.Humanoid then
+				if self.Player.Character.Humanoid.Health >0 then
+					local Animation = Instance.new("Animation")
+					Animation.AnimationId = animationlink
+					return Animation 
+				end
+
+			end
+		end
+
+	end
+
+end
+function CombatClass:MakeAnimationTrack(animation)
+	if animation then
+		return self.Player.Character.Humanoid:LoadAnimation(animation)
+	end
+end
+
+local _tempTracks = {}
+function CombatClass:LoadEvents(Track: AnimationTrack)
+	if Track then
+		local FirstFunction = table.insert(_tempTracks, #_tempTracks + 1, Track:GetMarkerReachedSignal("CreateHitBox"):Connect(function(v) 
+		end)) 
+		local SecondFunction = table.insert(_tempTracks, #_tempTracks + 1, Track:GetMarkerReachedSignal("CreatEffect"):Connect(function(v) 
+		end)) 
+		FirstFunction = nil
+		SecondFunction = nil
+	end
+end
+function CombatClass:_cleartemptracks()
+	_tempTracks = {}
+end
+function CombatClass:Attack()-- New and improved way of comboless attack system
+	local Weapon = self.EquippedWeapons[(self:GetCurrentWeapon())]
+	if Weapon.InHand == true and self.AnimationSwingFinishied == true then
+		local Data = self:GetPrimaryWeaponData()
+		local specialAttackValid, SpecialAttack = self:CheckForSpecialAttacks()
+
+		if specialAttackValid == true and SpecialAttack ~= (nil or "") then
+			-- special attacks
+		else
+			-- normal attacks
+			local NewAttack
+			for index, value in pairs(Data.AttackAnimations) do
+
+				if value ~= self.LastAttackName then
+					if value ~= self.LastLastAttackName then
+						NewAttack = value
+						break
+					end
+				end
+			end
+			local Link = self:MakeAnimation(NewAttack)
+			local Track = self:MakeAnimationTrack(Link)
+			Link = nil
+			self:LoadEvents(Track)
+			Track:Play()
+			Track.Stopped():Wait()
+			self:_cleartemptracks()
+
+			-- New attack is an animation link
+
+		end
+
+	end
+end
+function CombatClass:SwingSword()
+	local Weapon = self.EquippedWeapons[(self:GetCurrentWeapon())]
+	if Weapon.InHand == true and self.AnimationSwingFinishied == true then
+		-- setup Animator
+		local Data = self:GetPrimaryWeaponData()
+		if self.NumberOfSwings > Data.Animations.TotalAttacks then
+			self.NumberOfSwings = 1
+		end
+		local override = false
+		print(self.LastAttack)
+		if self.LastAttack == 0 then
+			override = true
+		end
+		if self.NumberOfSwings == 0 then
+			self.NumberOfSwings = 1
+		end
+		print(((self:GetOSTime()) - self.LastAttack))
+
+		print(self.NumberOfSwings)
+		if ((self:GetOSTime()) - self.LastAttack) >  Data.AttackBuffers[self.NumberOfSwings] or override == true then
+			if override == true then
+				override = false
+			end
+			print(tonumber(os.clock()) - self.LastAttack)
+			self:WeaponAnimate(self.NumberOfSwings)
+			self.LastAttack = tonumber(os.clock())
+			self.NumberOfSwings = self.NumberOfSwings + 1
+		end
+	end
+end
+function CombatClass:BlockSword()
+	if self.Blocking == true and ((tonumber(os.clock()) - self.LastBlock)> 0.01 ) then
+		-- unblock
+		print("unblock")
+		self:WeaponAnimate("Idle")
+		self.canAttack = true
+		self.Blocking = false
+
+	elseif self.Blocking == false and self.canBlock then
+		print("block")
+		self:WeaponAnimate("Blocking")
+		self.LastBlock = tonumber(os.clock())
+		self.Blocking = true
+		self.canAttack = false
+	end
+end
+function CombatClass:MouseClick(Code)	
+
+	if Code == 1 and self.canAttack == true and	self:GetCurrentWeapon() ~= nil  then
+		self:SwingSword()
+	elseif Code == 2 and self.canBlock == true and	self:GetCurrentWeapon() ~= nil  then
+		self:BlockSword()
+	elseif Code == "Q" and	self:GetCurrentWeapon() ~= nil  then
+		self:RegisterEvent("SkillUsed","Q")
+	elseif Code == "E" and	self:GetCurrentWeapon() ~= nil  then
+		self:RegisterEvent("SkillUsed","E")
+	elseif Code == "One" then
+		self:QuipWeapon(1)
+	elseif Code == "Two" then
+		self:QuipWeapon(2)
+	elseif Code == "Three" then
+		self:QuipWeapon(3)
+	elseif Code == "Four" then
+		self:QuipWeapon(4)
+	elseif Code == "Five" then
+		self:QuipWeapon(5)
+	elseif Code == "Six" then
+		self:QuipWeapon(6)
+	elseif Code == "Seven" then
+		self:QuipWeapon(7)
+	elseif Code == "Eight" then
+		self:QuipWeapon(8)
+	end
+end
+
+function CombatClass:SpecialAttack() -- If the player's camera moved enough, then this fires and they do a special attack.
+	local Degrees = self.LastDelta	
+
+
+	if (15 <Degrees >= 30) or  (-30 < Degrees < -15) then -- Quick stab at the facing direction
+
+
+	elseif (30 < Degrees <= 60 ) or (-60 <= Degrees < -30 )  then -- Horizontal slash at facing direction
+
+
+	elseif true then
+
+
+	end 
+
+
+end
+
+function CombatClass:TakeDamage()
+
+end
+
+function CombatClass:ShowDamageDealt(Damage, TypeOfDamage, Target)
+
+end
+
+-- Magic Functions
+
+function CombatClass:Animate()
+
+end
+
+
+function CombatClass:CastMagic(KeyCode)
+
+end
+
+function CombatClass:GetMagicDataFromKey(KeyCode)
+
+end
+
+function CombatClass:MagicEquipped(Name)
+	if self.canUseMagic == true and self:GetCurrentMagic() ~= nil then
+		if self.Player ~= nil then
+			print(Name)
+			if self.AllMagics[Name] ~= nil then
+				self.CurrentMagic = tostring(Name)
+				self:Animate()
+			end
+		end
+	end
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+return  CombatClass
